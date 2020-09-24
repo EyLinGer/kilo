@@ -94,21 +94,20 @@ typedef struct erow
                            check. */
 } erow;
 
-// TODO:ADD struct echunk
+// TODO:done ADD struct echunk
 /* This structure represents a single chunk of the file */
 typedef struct echunk
 {
     int idx;             /* Chunk index in the file, zero-based. */
-    int init_size;       /* Size of the chunk when it initializes, helps to figure out offset of the next chunk */
-    int size;            /* Size of the chunk, including the new-line term and EOF term */
+    size_t init_size;    /* Size of the chunk when it initializes, helps to figure out offset of the next chunk */
+    size_t size;         /* Size of the chunk, including the new-line term and EOF term */
     int dirty;           /* Chunk modified but not saved */
-    int last_line_begin; /* The offset of the last line's head, help to deal with '↑’ key*/
     char *filename;      /* File to save this chunk */
     char *content;       /* Chunk's content */
-    off_t offset;        /* Where this chunk starts in the target  file */
-    FILE *file;          /* Use to read/write to correspond file */
-    echunk *prev;        /* Previous chunk */
-    echunk *next;        /* next chunk */
+    off_t offset;        /* Where this chunk starts in the target file */
+    FILE *fp;            /* Use to read/write to correspond file */
+    struct echunk *prev; /* Previous chunk */
+    struct echunk *next; /* next chunk */
 } echunk;
 
 typedef struct ecursor
@@ -141,7 +140,7 @@ struct editorConfig
     struct editorSyntax *syntax; /* Current syntax highlight, or NULL. */
 
     // Add by EyLinGer
-    int numchunks;         /* Number of chunks */
+    size_t numchunks;      /* Number of chunks */
     echunk *chunks;        /* Chunks */
     echunk *last_chunk;    /* last chunk */
     ecursor cc;            /* Content cursor */
@@ -150,7 +149,6 @@ struct editorConfig
     char *line_buffer;     /* Buffer to store a line, its' buffer size depends on windows' width */
     FILE *fp;              /* Currently open file */
     struct stat file_stat; /* Information of file */
-    size_t chunk_fnlen;
 };
 
 static struct editorConfig E;
@@ -186,7 +184,8 @@ enum KEY_ACTION
 /* Utility */
 size_t numLen(size_t num)
 {
-    size_t ans = 0 while (num > 0)
+    size_t ans = 0;
+    while (num > 0)
     {
         num /= 10;
         ++ans;
@@ -197,19 +196,25 @@ size_t numLen(size_t num)
 void initChunk(echunk **pchunk)
 {
     assert(*pchunk != NULL);
+    (*pchunk)->idx = E.numchunks;
+    (*pchunk)->init_size = 0;
+    (*pchunk)->size = 0;
+    (*pchunk)->dirty = 0;
+    (*pchunk)->offset = 0;
     (*pchunk)->content = (char *)malloc(4 * 1024 * sizeof(char));
     assert((*pchunk)->content != NULL);
-    (*pchunk)->filename = (char *)malloc(E.chunk_fnlen * sizeof(char));
+    size_t chunk_fnlen = strlen(E.filename) + strlen(".kilo_chunk") + numLen(E.numchunks);
+    (*pchunk)->filename = (char *)malloc(chunk_fnlen * sizeof(char));
     assert((*pchunk)->filename != NULL);
+    (*pchunk)->fp = NULL;
+    (*pchunk)->prev = NULL;
+    (*pchunk)->next = NULL;
+
     if (sprintf((*pchunk)->filename, "%s.kilo_chunk%ld", E.filename, E.numchunks) < 0)
     {
         printf("sprinf failed\n");
         exit(EXIT_FAILURE);
     }
-    (*pchunk)->dirty = 0;
-    (*pchunk)->idx = E.numchunks;
-    (*pchunk)->file = NULL;
-    ++E.numchunks;
 }
 
 void appendChunk(echunk **pchunk)
@@ -219,6 +224,7 @@ void appendChunk(echunk **pchunk)
     (*pchunk)->prev = E.last_chunk; // ... <->last_chunk<->chunk
     (*pchunk)->next = NULL;         // ... <->last_chunk<->chunk->NULL
     E.last_chunk = *pchunk;         // ... <-> ... <->last_chunk(chunk)->NULL
+    ++E.numchunks;
 }
 
 void initRows(erow **prows)
@@ -233,25 +239,22 @@ void initRows(erow **prows)
     }
 }
 
-void loadALine(void)
+int loadALine(void)
 {
     assert(E.dec.in_chunk != NULL);
-    if (strncpy_s(E.line_buffer, E.screencols, E.dec.in_chunk->content + E.dec.offset, E.screencols))
-    {
-        printf("strncpy_s failed");
-        exit(EXIT_FAILURE);
-    }
     int i = 0;
+    strncpy(E.line_buffer, E.dec.in_chunk->content + E.dec.offset, E.screencols);
     for (i = 0; i < E.screencols; ++i)
     {
-        if (E.line_buffer[i] == '\n' || E.line_buffer == '\0');
+        if (E.line_buffer[i] == '\n')
         {
+            ++E.dec.offset;
             break;
         }
-        ++i;
     }
     E.dec.offset += i;
     E.line_buffer[i] = '\0';
+    return i;
 }
 
 void editorSetStatusMessage(const char *fmt, ...);
@@ -714,7 +717,9 @@ void editorUpdateSyntax(erow *row)
      * in the file. */
     int oc = editorRowHasOpenComment(row);
     if (row->hl_oc != oc && row->idx + 1 < E.numrows)
+    {
         ; //editorUpdateSyntax(&E.row[row->idx + 1]);
+    }
     row->hl_oc = oc;
 }
 
@@ -1066,7 +1071,9 @@ void editorDelChar()
             E.cx--;
     }
     if (row)
+    {
         ; //editorUpdateRow(row);
+    }
     E.dirty++;
 }
 
@@ -1083,8 +1090,7 @@ int editorOpen(char *filename)
     E.dirty = 0;
     free(E.filename);
     size_t fnlen = strlen(filename) + 1;
-    E.chunk_fnlen = fnlen + strlen(".kilo_chunk") + numLen(E.numchunks); // Add by EyLinGer
-    E.filename = malloc(fnlen);
+    E.filename = (char *)malloc(fnlen);
     memcpy(E.filename, filename, fnlen);
 
     E.fp = fopen(filename, "r"); // Change by EyLinGer
@@ -1100,16 +1106,6 @@ int editorOpen(char *filename)
 
     stat(E.filename, &E.file_stat); // TODO:MAY DELETE Add by EyLinGer
 
-    //char *line = E.line_buffer; //Delete by EyLinGer
-    //size_t linecap = 0; //Delete by EyLinGer
-    //ssize_t linelen; //Delete by EyLinGer
-    // Change by EyLinGer
-    /*
-    while((linelen = getline(&E.line_buffer,&linecap,E.fp)) != -1) {
-        if (linelen && (E.line_buffer[linelen-1] == '\n' || E.line_buffer[linelen-1] == '\r'))
-            E.line_buffer[--linelen] = '\0';
-        editorInsertRow(E.numrows,line,linelen);
-    }*/
     while (E.numchunks < 2)
     {
         echunk *chunk = (echunk *)malloc(sizeof(echunk));
@@ -1128,8 +1124,6 @@ int editorOpen(char *filename)
             break;
         }
     }
-    //free(line); //Delete by EyLinGer
-    //fclose(E.fp); //Delete by EyLinGer
     E.cc.in_chunk = E.dec.in_chunk = E.dsc.in_chunk = E.chunks->next;
     E.dirty = 0;
     return 0;
@@ -1206,145 +1200,23 @@ void abFree(struct abuf *ab)
  * starting from the logical state of the editor in the global state 'E'. */
 void editorRefreshScreen(void)
 {
-    int y;
-    erow *r;
-    char buf[32];
-    struct abuf ab = ABUF_INIT;
-
-    abAppend(&ab, "\x1b[?25l", 6); /* Hide cursor. */
-    abAppend(&ab, "\x1b[H", 3);    /* Go home. */
-    for (y = 0; y < E.screenrows; y++)
+    E.dec = E.dsc;
+    for (int i = 0; i < E.screenrows; ++i)
     {
-        int filerow = E.rowoff + y;
+        int linelen = loadALine();
+        strncpy(E.row[i].chars, E.line_buffer, linelen);
+        E.row[i].size = linelen;
+    }
 
-        if (filerow >= E.numrows)
-        {
-            if (E.numrows == 0 && y == E.screenrows / 3)
-            {
-                char welcome[80];
-                int welcomelen = snprintf(welcome, sizeof(welcome),
-                                          "Kilo editor -- verison %s\x1b[0K\r\n", KILO_VERSION);
-                int padding = (E.screencols - welcomelen) / 2;
-                if (padding)
-                {
-                    abAppend(&ab, "~", 1);
-                    padding--;
-                }
-                while (padding--)
-                    abAppend(&ab, " ", 1);
-                abAppend(&ab, welcome, welcomelen);
-            }
-            else
-            {
-                abAppend(&ab, "~\x1b[0K\r\n", 7);
-            }
-            continue;
-        }
-
-        r = &E.row[filerow];
-
-        int len = r->rsize - E.coloff;
-        int current_color = -1;
-        if (len > 0)
-        {
-            if (len > E.screencols)
-                len = E.screencols;
-            char *c = r->render + E.coloff;
-            unsigned char *hl = r->hl + E.coloff;
-            int j;
-            for (j = 0; j < len; j++)
-            {
-                if (hl[j] == HL_NONPRINT)
-                {
-                    char sym;
-                    abAppend(&ab, "\x1b[7m", 4);
-                    if (c[j] <= 26)
-                        sym = '@' + c[j];
-                    else
-                        sym = '?';
-                    abAppend(&ab, &sym, 1);
-                    abAppend(&ab, "\x1b[0m", 4);
-                }
-                else if (hl[j] == HL_NORMAL)
-                {
-                    if (current_color != -1)
-                    {
-                        abAppend(&ab, "\x1b[39m", 5);
-                        current_color = -1;
-                    }
-                    abAppend(&ab, c + j, 1);
-                }
-                else
-                {
-                    int color = editorSyntaxToColor(hl[j]);
-                    if (color != current_color)
-                    {
-                        char buf[16];
-                        int clen = snprintf(buf, sizeof(buf), "\x1b[%dm", color);
-                        current_color = color;
-                        abAppend(&ab, buf, clen);
-                    }
-                    abAppend(&ab, c + j, 1);
-                }
-            }
-        }
-        abAppend(&ab, "\x1b[39m", 5);
-        abAppend(&ab, "\x1b[0K", 4);
+    struct abuf ab = ABUF_INIT;
+    for (int i = 0; i < E.screenrows; ++i)
+    {
+        abAppend(&ab, E.row[i].chars, E.row[i].size);
         abAppend(&ab, "\r\n", 2);
     }
 
-    /* Create a two rows status. First row: */
-    abAppend(&ab, "\x1b[0K", 4);
-    abAppend(&ab, "\x1b[7m", 4);
-    char status[80], rstatus[80];
-    int len = snprintf(status, sizeof(status), "%.20s - %d lines %s",
-                       E.filename, E.numrows, E.dirty ? "(modified)" : "");
-    int rlen = snprintf(rstatus, sizeof(rstatus),
-                        "%d/%d", E.rowoff + E.cy + 1, E.numrows);
-    if (len > E.screencols)
-        len = E.screencols;
-    abAppend(&ab, status, len);
-    while (len < E.screencols)
-    {
-        if (E.screencols - len == rlen)
-        {
-            abAppend(&ab, rstatus, rlen);
-            break;
-        }
-        else
-        {
-            abAppend(&ab, " ", 1);
-            len++;
-        }
-    }
-    abAppend(&ab, "\x1b[0m\r\n", 6);
-
-    /* Second row depends on E.statusmsg and the status message update time. */
-    abAppend(&ab, "\x1b[0K", 4);
-    int msglen = strlen(E.statusmsg);
-    if (msglen && time(NULL) - E.statusmsg_time < 5)
-        abAppend(&ab, E.statusmsg, msglen <= E.screencols ? msglen : E.screencols);
-
-    /* Put cursor at its current position. Note that the horizontal position
-     * at which the cursor is displayed may be different compared to 'E.cx'
-     * because of TABs. */
-    int j;
-    int cx = 1;
-    int filerow = E.rowoff + E.cy;
-    erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
-    if (row)
-    {
-        for (j = E.coloff; j < (E.cx + E.coloff); j++)
-        {
-            if (j < row->size && row->chars[j] == TAB)
-                cx += 7 - ((cx) % 8);
-            cx++;
-        }
-    }
-    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy + 1, cx);
-    abAppend(&ab, buf, strlen(buf));
-    abAppend(&ab, "\x1b[?25h", 6); /* Show cursor. */
-    write(STDOUT_FILENO, ab.b, ab.len);
+    fwrite(ab.b, sizeof(char), ab.len, stdout);
+    fflush(stdout);
     abFree(&ab);
 }
 
@@ -1722,8 +1594,7 @@ void initEditor(void)
     E.chunks = (echunk *)malloc(sizeof(echunk));                                 // Add by EyLinGer
     assert(E.chunks != NULL);                                                    // Add by EyLinGer
     E.last_chunk = E.chunks;                                                     // Add by EyLinGer
-    E.chunk_fnlen = 0;
-    E.row = (char *)malloc(E.screenrows * sizeof(erow));
+    E.row = (erow *)malloc(E.screenrows * sizeof(erow));
     initRows(&E.row);
     signal(SIGWINCH, handleSigWinCh);
 }
@@ -1741,13 +1612,17 @@ int main(int argc, char **argv)
     initEditor();
     //editorSelectSyntaxHighlight(argv[1]);
     editorOpen(argv[1]);
+
     enableRawMode(STDIN_FILENO);
-    editorSetStatusMessage(
-        "HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find");
+    editorRefreshScreen();
+    /*editorSetStatusMessage(
+        "HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find");*/
+    /*
     while (1)
     {
         editorRefreshScreen();
         editorProcessKeypress(STDIN_FILENO);
-    }
+    }*/
+
     return 0;
 }
