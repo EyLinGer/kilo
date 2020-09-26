@@ -99,15 +99,15 @@ typedef struct erow
 typedef struct echunk
 {
     int idx;             /* Chunk index in the file, zero-based. */
-    size_t init_size;    /* Size of the chunk when it initializes, helps to figure out offset of the next chunk */
-    size_t size;         /* Size of the chunk, including the new-line term and EOF term */
+    long init_size;      /* Size of the chunk when it initializes, helps to figure out offset of the next chunk */
+    long size;           /* Size of the chunk, including the new-line term and EOF term */
     int dirty;           /* Chunk modified but not saved */
     char *filename;      /* File to save this chunk */
     char *content;       /* Chunk's content */
     off_t offset;        /* Where this chunk starts in the target file */
     FILE *fp;            /* Use to read/write to correspond file */
     struct echunk *prev; /* Previous chunk */
-    struct echunk *next; /* next chunk */
+    struct echunk *next; /* Next chunk */
 } echunk;
 
 typedef struct ecursor
@@ -141,13 +141,14 @@ struct editorConfig
 
     // Add by EyLinGer
     size_t numchunks;      /* Number of chunks */
-    echunk *chunks;        /* Chunks */
+    echunk *chunks_head;   /* Dummy head of chunk list */
     echunk *last_chunk;    /* last chunk */
     ecursor cc;            /* Content cursor */
     ecursor dsc;           /* Display start cursor */
     ecursor dec;           /* Display start cursor */
     char *line_buffer;     /* Buffer to store a line, its' buffer size depends on windows' width */
     FILE *fp;              /* Currently open file */
+    int eof;               /*Have we reached the enf of file?*/
     struct stat file_stat; /* Information of file */
 };
 
@@ -181,8 +182,8 @@ enum KEY_ACTION
     PAGE_DOWN
 };
 
-/* Utility */
-size_t numLen(size_t num)
+/* Utilities*/
+size_t numDigit(size_t num)
 {
     size_t ans = 0;
     while (num > 0)
@@ -203,7 +204,7 @@ void initChunk(echunk **pchunk)
     (*pchunk)->offset = 0;
     (*pchunk)->content = (char *)malloc(4 * 1024 * sizeof(char));
     assert((*pchunk)->content != NULL);
-    size_t chunk_fnlen = strlen(E.filename) + strlen(".kilo_chunk") + numLen(E.numchunks);
+    size_t chunk_fnlen = strlen(E.filename) + strlen(".kilo_chunk") + numDigit(E.numchunks);
     (*pchunk)->filename = (char *)malloc(chunk_fnlen * sizeof(char));
     assert((*pchunk)->filename != NULL);
     (*pchunk)->fp = NULL;
@@ -227,6 +228,26 @@ void appendChunk(echunk **pchunk)
     ++E.numchunks;
 }
 
+void loadAChunk()
+{
+    if (E.eof != 1)
+    {
+        echunk *chunk = (echunk *)malloc(sizeof(echunk));
+        initChunk(&chunk);
+        size_t nchar = fread(chunk->content, sizeof(char), (4 * 1024 - 1) * sizeof(char), E.fp); // read 4KB once at a time
+        chunk->content[nchar] = '\0';
+        chunk->init_size = nchar * sizeof(char);
+        chunk->size = chunk->init_size;
+        appendChunk(&chunk);
+
+        if (feof(E.fp))
+        {
+            E.eof = 1;
+        }
+    }
+    return;
+}
+
 void initRows(erow **prows)
 {
     assert((*prows) != NULL);
@@ -239,22 +260,198 @@ void initRows(erow **prows)
     }
 }
 
-int loadALine(void)
+int backwardALine(void)
+{
+    assert(E.dsc.in_chunk != NULL);
+    int i = 0;
+    char c = '\0';
+    while (i < E.screencols)
+    {
+        if (E.dsc.offset < 0)
+        {
+            if (E.dsc.in_chunk->prev != E.chunks_head)
+            {
+                E.dsc.offset = E.dsc.in_chunk->prev->size - 1;
+                E.dsc.in_chunk = E.dsc.in_chunk->prev;
+                continue;
+            }
+            else
+            {
+                E.dsc.offset = 0;
+                return i;
+            }
+        }
+        // E.dsc.offset >= 0
+        c = E.dsc.in_chunk->content[E.dsc.offset];
+        if (c == '\n')
+        {
+            if (E.dsc.offset == E.dsc.in_chunk->size - 1)
+            {
+                loadAChunk();
+                if (E.dsc.in_chunk == E.last_chunk)
+                {
+                    return i;
+                }
+                else
+                {
+                    E.dsc.in_chunk = E.dsc.in_chunk->next;
+                    E.dsc.offset = 0;
+                }
+            }
+            else
+            {
+                return i;
+            }
+        }
+        else
+        {
+            if (E.dsc.offset > 0)
+            {
+                --E.dsc.offset;
+                ++i;
+            }
+            else
+            {
+                --E.dsc.offset;
+            }
+        }
+    }
+    return i;
+}
+
+/* Load a 'line' forward from chunks, return how many characters the 'line' contains */
+/*
+int forwardALine(void)
 {
     assert(E.dec.in_chunk != NULL);
-    int i = 0;
-    strncpy(E.line_buffer, E.dec.in_chunk->content + E.dec.offset, E.screencols);
-    for (i = 0; i < E.screencols; ++i)
+    int nchars = 0;
+    while (nchars < E.screencols)
     {
-        if (E.line_buffer[i] == '\n')
+        char c = E.dec.in_chunk->content[E.dec.offset];
+        if (c == '\n')
         {
-            ++E.dec.offset;
+            ++E.dec.offset; // skip '\n'
+            break;
+        }
+        else if (c == '\0')
+        {
+            loadAChunk();
+            if (E.dec.in_chunk == E.last_chunk)
+            {
+                break;
+            }
+            else
+            {
+                E.dec.in_chunk = E.dec.in_chunk->next;
+                E.dec.offset = 0;
+                continue;
+            }
+        }
+        ++E.dec.offset;
+        E.line_buffer[nchars++] = c;
+    }
+    E.line_buffer[nchars] = '\0';
+    return nchars;
+}
+*/
+int forwardALine(void)
+{
+    assert(E.dec.in_chunk != NULL);
+    int nchars = 0;
+    while (nchars < E.screencols)
+    {
+        char c = E.dec.in_chunk->content[E.dec.offset];
+        if (c == '\0')
+        {
+            loadAChunk();
+            if (E.dec.in_chunk == E.last_chunk)
+            {
+                break;
+            }
+            else
+            {
+                E.dec.in_chunk = E.dec.in_chunk->next;
+                E.dec.offset = 0;
+                continue;
+            }
+        }
+        ++E.dec.offset;
+        E.line_buffer[nchars++] = c;
+        if (c == '\n')
+        {
             break;
         }
     }
-    E.dec.offset += i;
-    E.line_buffer[i] = '\0';
-    return i;
+    E.line_buffer[nchars] = '\0';
+    return nchars;
+}
+
+void cursorBackward(ecursor *pcursor, int n)
+{
+    assert(pcursor->in_chunk != NULL);
+    int i = 0;
+    while (i < n)
+    {
+        if (pcursor->offset < 0)
+        {
+            if (pcursor->in_chunk->prev != E.chunks_head)
+            {
+                pcursor->offset = pcursor->in_chunk->prev->size - 1;
+                pcursor->in_chunk = pcursor->in_chunk->prev;
+                continue;
+            }
+            else
+            {
+                return;
+            }
+        }
+        else if (pcursor->offset > 0)
+        {
+            --pcursor->offset;
+            ++i;
+        }
+        else
+        {
+            --pcursor->offset;
+        }
+    }
+}
+
+void cursorForward(ecursor *pcursor, int n)
+{
+    assert(pcursor->in_chunk != NULL);
+    int i = 0;
+    while (i < n)
+    {
+        if (pcursor->offset > pcursor->in_chunk->size - 1)
+        {
+            if (pcursor->in_chunk->next != NULL)
+            {
+                pcursor->offset = 0;
+                pcursor->in_chunk = pcursor->in_chunk->next;
+                continue;
+            }
+            else
+            {
+                loadAChunk();
+                if (pcursor->in_chunk == E.last_chunk)
+                {
+                    pcursor->offset = pcursor->in_chunk->size - 1;
+                    break;
+                }
+                continue;
+            }
+        }
+        else if (pcursor->offset < pcursor->in_chunk->size - 1)
+        {
+            ++pcursor->offset;
+            ++i;
+        }
+        else
+        {
+            ++pcursor->offset;
+        }
+    }
 }
 
 void editorSetStatusMessage(const char *fmt, ...);
@@ -1082,7 +1279,7 @@ void editorDelChar()
 /* Load the specified program in the editor memory and returns 0 on success
  * or 1 on error. */
 /* TODO: Make this configurable 
-    Try to load 8KiB if file size is greater than 8KiB and returns 0 on success or 1 on error.*/
+    Try to load 4KiB if file size is greater than 4KiB and returns 0 on success or 1 on error.*/
 int editorOpen(char *filename)
 {
     //FILE *fp; //Delete by EyLinGer
@@ -1106,25 +1303,8 @@ int editorOpen(char *filename)
 
     stat(E.filename, &E.file_stat); // TODO:MAY DELETE Add by EyLinGer
 
-    while (E.numchunks < 2)
-    {
-        echunk *chunk = (echunk *)malloc(sizeof(echunk));
-
-        initChunk(&chunk);
-
-        size_t nchar = fread(chunk->content, sizeof(char), (4 * 1024 - 1) * sizeof(char), E.fp); // read 4KB once at a time
-        chunk->content[nchar] = '\0';
-        chunk->init_size = nchar * sizeof(char);
-        chunk->size = chunk->init_size;
-
-        appendChunk(&chunk);
-
-        if (feof(E.fp))
-        {
-            break;
-        }
-    }
-    E.cc.in_chunk = E.dec.in_chunk = E.dsc.in_chunk = E.chunks->next;
+    loadAChunk();
+    E.cc.in_chunk = E.dec.in_chunk = E.dsc.in_chunk = E.chunks_head->next;
     E.dirty = 0;
     return 0;
 }
@@ -1201,23 +1381,41 @@ void abFree(struct abuf *ab)
 void editorRefreshScreen(void)
 {
     E.dec = E.dsc;
-    for (int i = 0; i < E.screenrows; ++i)
+    for (int i = 0; i < E.numrows; ++i)
     {
-        int linelen = loadALine();
+        int linelen = forwardALine();
         strncpy(E.row[i].chars, E.line_buffer, linelen);
         E.row[i].size = linelen;
     }
-
     struct abuf ab = ABUF_INIT;
-    for (int i = 0; i < E.screenrows; ++i)
+    abAppend(&ab, E.row[0].chars, E.row[0].size);
+    if (E.row[0].chars[E.row[0].size - 1] == '\n')
     {
-        abAppend(&ab, E.row[i].chars, E.row[i].size);
+        abAppend(&ab, "\r", 1);
+    }
+    else
+    {
         abAppend(&ab, "\r\n", 2);
     }
-
     fwrite(ab.b, sizeof(char), ab.len, stdout);
     fflush(stdout);
     abFree(&ab);
+    /*
+    for (int i = 0; i < E.numrows; ++i)
+    {
+        abAppend(&ab, E.row[i].chars, E.row[i].size);
+        if (E.row[i].chars[E.row[i].size - 1] == '\n')
+        {
+            abAppend(&ab, "\r", 1);
+        }
+        else
+        {
+            abAppend(&ab, "\r\n", 2);
+        }
+    }
+    fwrite(ab.b, sizeof(char), ab.len, stdout);
+    fflush(stdout);
+    abFree(&ab);*/
 }
 
 /* Set an editor status message for the second line of the status, at the
@@ -1367,103 +1565,75 @@ void editorFind(int fd)
 /* Handle cursor position change because arrow keys were pressed. */
 void editorMoveCursor(int key)
 {
-    int filerow = E.rowoff + E.cy;
-    int filecol = E.coloff + E.cx;
-    int rowlen;
-    erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
-
+    int n = 0;
     switch (key)
     {
     case ARROW_LEFT:
-        if (E.cx == 0)
+        E.cx = E.cx == 0 ? 0 : E.cx - 1;
+        if (E.cc.in_chunk->idx > E.dsc.in_chunk->idx)
         {
-            if (E.coloff)
-            {
-                E.coloff--;
-            }
-            else
-            {
-                if (filerow > 0)
-                {
-                    E.cy--;
-                    E.cx = E.row[filerow - 1].size;
-                    if (E.cx > E.screencols - 1)
-                    {
-                        E.coloff = E.cx - E.screencols + 1;
-                        E.cx = E.screencols - 1;
-                    }
-                }
-            }
+            cursorBackward(&E.cc, 1);
         }
         else
         {
-            E.cx -= 1;
+            if (E.cc.offset > E.dsc.offset)
+            {
+                cursorBackward(&E.cc, 1);
+            }
+            else
+            {
+                n = backwardALine();
+                cursorBackward(&E.cc, n);
+            }
         }
         break;
     case ARROW_RIGHT:
-        if (row && filecol < row->size)
+        E.cx = E.cx < E.row[E.cy].size - 1 ? E.cx + 1 : E.cx;
+        if (E.cc.in_chunk->idx < E.dec.in_chunk->idx)
         {
-            if (E.cx == E.screencols - 1)
-            {
-                E.coloff++;
-            }
-            else
-            {
-                E.cx += 1;
-            }
+            cursorForward(&E.cc, 1);
         }
-        else if (row && filecol == row->size)
+        else
         {
-            E.cx = 0;
-            E.coloff = 0;
-            if (E.cy == E.screenrows - 1)
+            if (E.cc.offset > E.dec.offset)
             {
-                E.rowoff++;
+                n = forwardALine();
+                cursorForward(&E.dsc, n);
+                cursorForward(&E.cc, 1);
             }
             else
             {
-                E.cy += 1;
+                cursorForward(&E.cc, 1);
             }
         }
         break;
     case ARROW_UP:
-        if (E.cy == 0)
+        if (E.cy <= 0)
         {
-            if (E.rowoff)
-                E.rowoff--;
+            n = backwardALine();
+            cursorBackward(&E.cc, n);
         }
         else
         {
-            E.cy -= 1;
-        }
-        break;
-    case ARROW_DOWN:
-        if (filerow < E.numrows)
-        {
-            if (E.cy == E.screenrows - 1)
-            {
-                E.rowoff++;
-            }
-            else
-            {
-                E.cy += 1;
-            }
-        }
-        break;
-    }
-    /* Fix cx if the current line has not enough chars. */
-    filerow = E.rowoff + E.cy;
-    filecol = E.coloff + E.cx;
-    row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
-    rowlen = row ? row->size : 0;
-    if (filecol > rowlen)
-    {
-        E.cx -= filecol - rowlen;
-        if (E.cx < 0)
-        {
-            E.coloff += E.cx;
+            cursorBackward(&E.cc, E.row[E.cy - 1].size + E.cx);
             E.cx = 0;
         }
+        E.cy = E.cy == 0 ? 0 : E.cy - 1;
+        break;
+    case ARROW_DOWN:
+        if (E.cy >= E.numrows - 1)
+        {
+            cursorForward(&E.dsc, E.row[0].size);
+            cursorForward(&E.cc, E.row[E.cy].size - E.cx);
+            n = forwardALine();
+            E.cx = 0;
+        }
+        else
+        {
+            cursorForward(&E.cc, E.row[E.cy].size - E.cx);
+        }
+        E.cy = E.cy < E.numrows - 1 ? E.cy + 1 : E.numrows - 1;
+        break;
     }
 }
 
@@ -1481,9 +1651,6 @@ void editorProcessKeypress(int fd)
     int c = editorReadKey(fd);
     switch (c)
     {
-    case ENTER: /* Enter */
-        editorInsertNewline();
-        break;
     case CTRL_C: /* Ctrl-c */
         /* We ignore ctrl-c, it can't be so simple to lose the changes
          * to the edited file. */
@@ -1586,16 +1753,17 @@ void initEditor(void)
     E.filename = NULL;
     E.syntax = NULL;
     E.numchunks = 0;
-    E.cc.offset = E.dsc.offset = E.dec.offset = 0;          // Add by EyLinGer
     E.cc.in_chunk = E.dsc.in_chunk = E.dec.in_chunk = NULL; // Add by EyLinGer
+    E.cc.offset = E.dsc.offset = E.dec.offset = 0;          // Add by EyLinGer
     updateWindowSize();
     E.line_buffer = (char *)realloc(E.line_buffer, E.screencols * sizeof(char)); // Add by EyLinGer
     assert(E.line_buffer != NULL);                                               // Add by EyLinGer
-    E.chunks = (echunk *)malloc(sizeof(echunk));                                 // Add by EyLinGer
-    assert(E.chunks != NULL);                                                    // Add by EyLinGer
-    E.last_chunk = E.chunks;                                                     // Add by EyLinGer
+    E.chunks_head = (echunk *)malloc(sizeof(echunk));                            // Add by EyLinGer
+    assert(E.chunks_head != NULL);                                               // Add by EyLinGer
+    E.last_chunk = E.chunks_head;                                                // Add by EyLinGer
     E.row = (erow *)malloc(E.screenrows * sizeof(erow));
     initRows(&E.row);
+    E.eof = 0;
     signal(SIGWINCH, handleSigWinCh);
 }
 
@@ -1610,19 +1778,20 @@ int main(int argc, char **argv)
     }
 
     initEditor();
-    //editorSelectSyntaxHighlight(argv[1]);
+    editorSelectSyntaxHighlight(argv[1]);
     editorOpen(argv[1]);
-
     enableRawMode(STDIN_FILENO);
-    editorRefreshScreen();
-    /*editorSetStatusMessage(
-        "HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find");*/
+
     /*
+    editorSetStatusMessage(
+        "HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find");
+    */
+
     while (1)
     {
         editorRefreshScreen();
         editorProcessKeypress(STDIN_FILENO);
-    }*/
+    }
 
     return 0;
 }
