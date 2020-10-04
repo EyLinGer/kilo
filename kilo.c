@@ -398,6 +398,7 @@ int forwardALine(void)
 }
 
 void editorSetStatusMessage(const char *fmt, ...);
+void editorMoveCursor(int key);
 
 /* ======================= Low level terminal handling ====================== */
 
@@ -637,6 +638,7 @@ void editorInsertChar(int c)
     ++chunk->size;
     ++E.cc.in_chunk->dirty;
     ++E.dirty;
+    editorMoveCursor(ARROW_RIGHT);
 }
 
 /* Delete the char at the current prompt position. */
@@ -650,6 +652,7 @@ void editorDelChar()
     --E.cc.in_chunk->size;
     ++E.cc.in_chunk->dirty;
     ++E.dirty;
+    editorMoveCursor(ARROW_LEFT);
 }
 
 /* Load the specified program in the editor memory and returns 0 on success
@@ -698,6 +701,7 @@ int editorSave(void)
         activateChunk(&pchunk);
         fwrite(pchunk->content, sizeof(char), pchunk->size, fp);
         deactivateChunk(&pchunk);
+        pchunk->dirty = 0;
         pchunk = pchunk->next;
     }
     if (E.eof != 1)
@@ -721,6 +725,7 @@ int editorSave(void)
         E.eof = 0;
     }
     fclose(fp);
+    E.dirty = 0;
     editorSetStatusMessage("File Saved!");
     return 0;
 }
@@ -824,49 +829,22 @@ void editorMoveCursor(int key)
     switch (key)
     {
     case ARROW_LEFT:
-        E.cx = E.cx == 0 ? 0 : E.cx - 1;
-        if (E.cc.in_chunk->idx > E.dsc.in_chunk->idx)
-        {
+        if(E.cx > 0){
+            --E.cx;
             cursorBackward(&E.cc, 1);
-        }
-        else
-        {
-            if (E.cc.offset > E.dsc.offset)
-            {
-                cursorBackward(&E.cc, 1);
-            }
-            else
-            {
-                n = backwardALine();
-                cursorBackward(&E.cc, n);
-            }
         }
         break;
     case ARROW_RIGHT:
-        E.cx = E.cx < E.row[E.cy].size - 1 ? E.cx + 1 : E.cx;
-        if (E.cc.in_chunk->idx < E.dec.in_chunk->idx)
-        {
+        if(E.cx < E.row[E.cy].size - 1){
+            ++E.cx;
             cursorForward(&E.cc, 1);
-        }
-        else
-        {
-            if (E.cc.offset > E.dec.offset)
-            {
-                n = forwardALine();
-                cursorForward(&E.dsc, n);
-                cursorForward(&E.cc, 1);
-            }
-            else
-            {
-                cursorForward(&E.cc, 1);
-            }
         }
         break;
     case ARROW_UP:
         if (E.cy <= 0)
         {
             n = backwardALine();
-            cursorBackward(&E.cc, n);
+            cursorBackward(&E.cc, n + E.cx);
         }
         else
         {
@@ -881,12 +859,12 @@ void editorMoveCursor(int key)
             cursorForward(&E.dsc, E.row[0].size);
             cursorForward(&E.cc, E.row[E.cy].size - E.cx);
             n = forwardALine();
-            E.cx = 0;
         }
         else
         {
             cursorForward(&E.cc, E.row[E.cy].size - E.cx);
         }
+        E.cx = 0;
         E.cy = E.cy < E.numrows - 1 ? E.cy + 1 : E.numrows - 1;
         break;
     }
@@ -977,18 +955,6 @@ void updateWindowSize(void)
     E.screenrows -= 1; /* Get room for status bar. */
 }
 
-void handleSigWinCh(int unused __attribute__((unused)))
-{
-    updateWindowSize();
-    if (E.cy > E.screenrows)
-        E.cy = E.screenrows - 1;
-    if (E.cx > E.screencols)
-        E.cx = E.screencols - 1;
-    E.line_buffer = (char *)realloc(E.line_buffer, E.screencols * sizeof(char)); // Add by EyLinGer
-    initRows(&E.row);
-    editorRefreshScreen();
-}
-
 void initEditor(void)
 {
     E.cx = 0;
@@ -1011,7 +977,6 @@ void initEditor(void)
     E.row = (erow *)malloc(E.screenrows * sizeof(erow));
     initRows(&E.row);
     E.eof = 0;
-    signal(SIGWINCH, handleSigWinCh);
 }
 
 int main(int argc, char **argv)
