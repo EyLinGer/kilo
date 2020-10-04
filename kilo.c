@@ -253,6 +253,7 @@ void cursorBackward(ecursor *pcursor, int n)
         {
             if (pcursor->in_chunk->prev != E.chunks_head)
             {
+                activateChunk(&pcursor->in_chunk->prev);
                 pcursor->offset = pcursor->in_chunk->prev->size - 1;
                 pcursor->in_chunk = pcursor->in_chunk->prev;
                 continue;
@@ -378,15 +379,25 @@ int forwardALine(void)
 {
     assert(E.dec.in_chunk != NULL);
     int nchars = 0;
+    char c = '\0';
     while (nchars < E.screencols)
     {
-        char c = E.dec.in_chunk->content[E.dec.offset];
+        c = E.dec.in_chunk->content[E.dec.offset];
         if (c == '\0')
         {
-            cursorForward(&E.dec, 1);
-            continue;
+            loadAChunk();
+            if (E.dec.in_chunk == E.last_chunk)
+            {
+                break;
+            }
+            else
+            {
+                E.dec.in_chunk = E.dec.in_chunk->next;
+                E.dec.offset = 0;
+                continue;
+            }
         }
-        cursorForward(&E.dec, 1);
+        ++E.dec.offset;
         E.line_buffer[nchars++] = c;
         if (c == '\n')
         {
@@ -829,13 +840,15 @@ void editorMoveCursor(int key)
     switch (key)
     {
     case ARROW_LEFT:
-        if(E.cx > 0){
+        if (E.cx > 0)
+        {
             --E.cx;
             cursorBackward(&E.cc, 1);
         }
         break;
     case ARROW_RIGHT:
-        if(E.cx < E.row[E.cy].size - 1){
+        if (E.cx < E.row[E.cy].size - 1)
+        {
             ++E.cx;
             cursorForward(&E.cc, 1);
         }
@@ -878,7 +891,7 @@ void editorProcessKeypress(int fd)
     /* When the file is modified, requires Ctrl-q to be pressed N times
      * before actually quitting. */
     static int quit_times = KILO_QUIT_TIMES;
-
+    //int times = 0;
     int c = editorReadKey(fd);
     switch (c)
     {
@@ -913,15 +926,11 @@ void editorProcessKeypress(int fd)
         break;
     case PAGE_UP:
     case PAGE_DOWN:
-        if (c == PAGE_UP && E.cy != 0)
-            E.cy = 0;
-        else if (c == PAGE_DOWN && E.cy != E.screenrows - 1)
-            E.cy = E.screenrows - 1;
-        {
-            int times = E.screenrows;
-            while (times--)
-                editorMoveCursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
-        }
+        /*
+        times = E.screenrows;
+        while (times--){
+            editorMoveCursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
+        }*/
         break;
 
     case ARROW_UP:
