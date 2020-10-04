@@ -300,6 +300,7 @@ int backwardALine(void)
             }
             else
             {
+                --E.dsc.offset;
                 return i;
             }
         }
@@ -320,40 +321,6 @@ int backwardALine(void)
 }
 
 /* Load a 'line' forward from chunks, return how many characters the 'line' contains */
-/*
-int forwardALine(void)
-{
-    assert(E.dec.in_chunk != NULL);
-    int nchars = 0;
-    while (nchars < E.screencols)
-    {
-        char c = E.dec.in_chunk->content[E.dec.offset];
-        if (c == '\n')
-        {
-            ++E.dec.offset; // skip '\n'
-            break;
-        }
-        else if (c == '\0')
-        {
-            loadAChunk();
-            if (E.dec.in_chunk == E.last_chunk)
-            {
-                break;
-            }
-            else
-            {
-                E.dec.in_chunk = E.dec.in_chunk->next;
-                E.dec.offset = 0;
-                continue;
-            }
-        }
-        ++E.dec.offset;
-        E.line_buffer[nchars++] = c;
-    }
-    E.line_buffer[nchars] = '\0';
-    return nchars;
-}
-*/
 int forwardALine(void)
 {
     assert(E.dec.in_chunk != NULL);
@@ -526,6 +493,9 @@ void disableRawMode(int fd)
 /* Called at exit to avoid remaining in raw mode. */
 void editorAtExit(void)
 {
+    fwrite("\x1b[2J", sizeof(char), 4, stdout);
+    fwrite("\x1b[H", sizeof(char), 3, stdout);
+    fflush(stdout);
     disableRawMode(STDIN_FILENO);
 }
 
@@ -1013,265 +983,31 @@ void editorUpdateRow(erow *row)
     //editorUpdateSyntax(row);
 }
 
-// TODO:CHANGE editorInsertRow
-// Change by EyLinGer
-/* Insert a row at the specified position, shifting the other rows on the bottom
- * if required. */
-void editorInsertRow(int at, char *s, size_t len)
-{
-    memcpy(E.row[at].chars, s, len + 1);
-    E.row[at].size = len;
-    E.row[at].hl = NULL;
-    E.row[at].hl_oc = 0;
-    E.row[at].render = NULL;
-    E.row[at].rsize = 0;
-    E.row[at].idx = at;
-    //editorUpdateRow(E.row+at);
-    E.numrows++;
-    E.dirty++;
-    /*if (at > E.numrows) return;
-    E.row = realloc(E.row,sizeof(erow)*(E.numrows+1));
-    if (at != E.numrows) {
-        memmove(E.row+at+1,E.row+at,sizeof(E.row[0])*(E.numrows-at));
-        for (int j = at+1; j <= E.numrows; j++) E.row[j].idx++;
-    }
-    
-    E.row[at].chars = malloc(len+1);
-    
-   */
-}
-
-/* Free row's heap allocated stuff. */
-void editorFreeRow(erow *row)
-{
-    free(row->render);
-    free(row->chars);
-    free(row->hl);
-}
-
-// TODO:CHANGE editorDelRow
-
-/* Remove the row at the specified position, shifting the remainign on the
- * top. */
-void editorDelRow(int at)
-{
-    erow *row;
-
-    if (at >= E.numrows)
-        return;
-    row = E.row + at;
-    editorFreeRow(row);
-    memmove(E.row + at, E.row + at + 1, sizeof(E.row[0]) * (E.numrows - at - 1));
-    for (int j = at; j < E.numrows - 1; j++)
-        E.row[j].idx++;
-    E.numrows--;
-    E.dirty++;
-}
-
-// TODO:REPLACE editorRowsToString
-
-/* Turn the editor rows into a single heap-allocated string.
- * Returns the pointer to the heap-allocated string and populate the
- * integer pointed by 'buflen' with the size of the string, escluding
- * the final nulterm. */
-char *editorRowsToString(int *buflen)
-{
-    char *buf = NULL, *p;
-    int totlen = 0;
-    int j;
-
-    /* Compute count of bytes */
-    for (j = 0; j < E.numrows; j++)
-        totlen += E.row[j].size + 1; /* +1 is for "\n" at end of every row */
-    *buflen = totlen;
-    totlen++; /* Also make space for nulterm */
-
-    p = buf = malloc(totlen);
-    for (j = 0; j < E.numrows; j++)
-    {
-        memcpy(p, E.row[j].chars, E.row[j].size);
-        p += E.row[j].size;
-        *p = '\n';
-        p++;
-    }
-    *p = '\0';
-    return buf;
-}
-
-// TODO:CHANGE editorRowInsertChar
-
-/* Insert a character at the specified position in a row, moving the remaining
- * chars on the right if needed. */
-void editorRowInsertChar(erow *row, int at, int c)
-{
-    if (at > row->size)
-    {
-        /* Pad the string with spaces if the insert location is outside the
-         * current length by more than a single character. */
-        int padlen = at - row->size;
-        /* In the next line +2 means: new char and null term. */
-        row->chars = realloc(row->chars, row->size + padlen + 2);
-        memset(row->chars + row->size, ' ', padlen);
-        row->chars[row->size + padlen + 1] = '\0';
-        row->size += padlen + 1;
-    }
-    else
-    {
-        /* If we are in the middle of the string just make space for 1 new
-         * char plus the (already existing) null term. */
-        row->chars = realloc(row->chars, row->size + 2);
-        memmove(row->chars + at + 1, row->chars + at, row->size - at + 1);
-        row->size++;
-    }
-    row->chars[at] = c;
-    //editorUpdateRow(row);
-    E.dirty++;
-}
-
-// TODO:CHANGE editorRowAppendString
-
-/* Append the string 's' at the end of a row */
-void editorRowAppendString(erow *row, char *s, size_t len)
-{
-    row->chars = realloc(row->chars, row->size + len + 1);
-    memcpy(row->chars + row->size, s, len);
-    row->size += len;
-    row->chars[row->size] = '\0';
-    //editorUpdateRow(row);
-    E.dirty++;
-}
-
-// TODO:CHANGE editorRowDelChar
-
-/* Delete the character at offset 'at' from the specified row. */
-void editorRowDelChar(erow *row, int at)
-{
-    if (row->size <= at)
-        return;
-    memmove(row->chars + at, row->chars + at + 1, row->size - at);
-    //editorUpdateRow(row);
-    row->size--;
-    E.dirty++;
-}
-
-// TODO:CHANGE editorInsertChar
-
 /* Insert the specified char at the current prompt position. */
 void editorInsertChar(int c)
 {
-    int filerow = E.rowoff + E.cy;
-    int filecol = E.coloff + E.cx;
-    erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
-
-    /* If the row where the cursor is currently located does not exist in our
-     * logical representaion of the file, add enough empty rows as needed. */
-    if (!row)
-    {
-        while (E.numrows <= filerow)
-            editorInsertRow(E.numrows, "", 0);
-    }
-    row = &E.row[filerow];
-    editorRowInsertChar(row, filecol, c);
-    if (E.cx == E.screencols - 1)
-        E.coloff++;
-    else
-        E.cx++;
-    E.dirty++;
+    echunk *chunk = E.cc.in_chunk;
+    char *ps = (char *)realloc(chunk->content, chunk->size + 1);
+    assert(ps != NULL);
+    memmove(ps + E.cc.offset + 1, ps + E.cc.offset, chunk->size - E.cc.offset - 1);
+    chunk->content = ps;
+    chunk->content[E.cc.offset] = c;
+    ++chunk->size;
+    ++E.cc.in_chunk->dirty;
+    ++E.dirty;
 }
-
-// TODO:CHANGE editorInsertNewline
-
-/* Inserting a newline is slightly complex as we have to handle inserting a
- * newline in the middle of a line, splitting the line as needed. */
-void editorInsertNewline(void)
-{
-    int filerow = E.rowoff + E.cy;
-    int filecol = E.coloff + E.cx;
-    erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
-
-    if (!row)
-    {
-        if (filerow == E.numrows)
-        {
-            editorInsertRow(filerow, "", 0);
-            goto fixcursor;
-        }
-        return;
-    }
-    /* If the cursor is over the current line size, we want to conceptually
-     * think it's just over the last character. */
-    if (filecol >= row->size)
-        filecol = row->size;
-    if (filecol == 0)
-    {
-        editorInsertRow(filerow, "", 0);
-    }
-    else
-    {
-        /* We are in the middle of a line. Split it between two rows. */
-        editorInsertRow(filerow + 1, row->chars + filecol, row->size - filecol);
-        row = &E.row[filerow];
-        row->chars[filecol] = '\0';
-        row->size = filecol;
-        //editorUpdateRow(row);
-    }
-fixcursor:
-    if (E.cy == E.screenrows - 1)
-    {
-        E.rowoff++;
-    }
-    else
-    {
-        E.cy++;
-    }
-    E.cx = 0;
-    E.coloff = 0;
-}
-
-// TODO:CHANGE editorDelChar
 
 /* Delete the char at the current prompt position. */
 void editorDelChar()
 {
-    int filerow = E.rowoff + E.cy;
-    int filecol = E.coloff + E.cx;
-    erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
-
-    if (!row || (filecol == 0 && filerow == 0))
-        return;
-    if (filecol == 0)
-    {
-        /* Handle the case of column 0, we need to move the current line
-         * on the right of the previous one. */
-        filecol = E.row[filerow - 1].size;
-        editorRowAppendString(&E.row[filerow - 1], row->chars, row->size);
-        editorDelRow(filerow);
-        row = NULL;
-        if (E.cy == 0)
-            E.rowoff--;
-        else
-            E.cy--;
-        E.cx = filecol;
-        if (E.cx >= E.screencols)
-        {
-            int shift = (E.screencols - E.cx) + 1;
-            E.cx -= shift;
-            E.coloff += shift;
-        }
-    }
-    else
-    {
-        editorRowDelChar(row, filecol - 1);
-        if (E.cx == 0 && E.coloff)
-            E.coloff--;
-        else
-            E.cx--;
-    }
-    if (row)
-    {
-        ; //editorUpdateRow(row);
-    }
-    E.dirty++;
+    echunk *chunk = E.cc.in_chunk;
+    memmove(chunk->content + E.cc.offset, chunk->content + E.cc.offset + 1, chunk->size - E.cc.offset - 1);
+    char *ps = (char *)realloc(chunk->content, chunk->size - 1);
+    assert(ps != NULL);
+    chunk->content = ps;
+    --E.cc.in_chunk->size;
+    ++E.cc.in_chunk->dirty;
+    ++E.dirty;
 }
 
 // TODO:CHANGE editorOpen
@@ -1282,8 +1018,6 @@ void editorDelChar()
     Try to load 4KiB if file size is greater than 4KiB and returns 0 on success or 1 on error.*/
 int editorOpen(char *filename)
 {
-    //FILE *fp; //Delete by EyLinGer
-
     E.dirty = 0;
     free(E.filename);
     size_t fnlen = strlen(filename) + 1;
@@ -1314,31 +1048,7 @@ int editorOpen(char *filename)
 /* Save the current file on disk. Return 0 on success, 1 on error. */
 int editorSave(void)
 {
-    int len;
-    char *buf = editorRowsToString(&len);
-    int fd = open(E.filename, O_RDWR | O_CREAT, 0644);
-    if (fd == -1)
-        goto writeerr;
-
-    /* Use truncate + a single write(2) call in order to make saving
-     * a bit safer, under the limits of what we can do in a small editor. */
-    if (ftruncate(fd, len) == -1)
-        goto writeerr;
-    if (write(fd, buf, len) != len)
-        goto writeerr;
-
-    close(fd);
-    free(buf);
-    E.dirty = 0;
-    editorSetStatusMessage("%d bytes written on disk", len);
     return 0;
-
-writeerr:
-    free(buf);
-    if (fd != -1)
-        close(fd);
-    editorSetStatusMessage("Can't save! I/O error: %s", strerror(errno));
-    return 1;
 }
 
 /* ============================= Terminal update ============================ */
@@ -1388,19 +1098,9 @@ void editorRefreshScreen(void)
         E.row[i].size = linelen;
     }
     struct abuf ab = ABUF_INIT;
-    abAppend(&ab, E.row[0].chars, E.row[0].size);
-    if (E.row[0].chars[E.row[0].size - 1] == '\n')
-    {
-        abAppend(&ab, "\r", 1);
-    }
-    else
-    {
-        abAppend(&ab, "\r\n", 2);
-    }
-    fwrite(ab.b, sizeof(char), ab.len, stdout);
-    fflush(stdout);
-    abFree(&ab);
-    /*
+    abAppend(&ab, "\x1b[2J", 4); // clear the terminal
+    abAppend(&ab,"\x1b[?25l",6); /* Hide cursor. */
+    abAppend(&ab,"\x1b[H",3); /* Go home. */
     for (int i = 0; i < E.numrows; ++i)
     {
         abAppend(&ab, E.row[i].chars, E.row[i].size);
@@ -1413,9 +1113,13 @@ void editorRefreshScreen(void)
             abAppend(&ab, "\r\n", 2);
         }
     }
+    char buf[32];
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy + 1, E.cx + 1);
+    abAppend(&ab, buf, strlen(buf));
+    abAppend(&ab,"\x1b[?25h",6); /* Show cursor. */
     fwrite(ab.b, sizeof(char), ab.len, stdout);
     fflush(stdout);
-    abFree(&ab);*/
+    abFree(&ab);
 }
 
 /* Set an editor status message for the second line of the status, at the
@@ -1618,7 +1322,7 @@ void editorMoveCursor(int key)
             cursorBackward(&E.cc, E.row[E.cy - 1].size + E.cx);
             E.cx = 0;
         }
-        E.cy = E.cy == 0 ? 0 : E.cy - 1;
+        E.cy = E.cy <= 0 ? 0 : E.cy - 1;
         break;
     case ARROW_DOWN:
         if (E.cy >= E.numrows - 1)
@@ -1709,11 +1413,6 @@ void editorProcessKeypress(int fd)
     }
 
     quit_times = KILO_QUIT_TIMES; /* Reset it to the original value. */
-}
-
-int editorFileWasModified(void)
-{
-    return E.dirty;
 }
 
 void updateWindowSize(void)
