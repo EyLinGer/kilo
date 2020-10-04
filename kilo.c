@@ -56,6 +56,7 @@
 
 // Add by EyLinGer
 #include <sys/stat.h> // For 'struct stat'
+#include <libgen.h>   // For basename()
 
 /* Syntax highlight types */
 #define HL_NORMAL 0
@@ -204,7 +205,7 @@ void initChunk(echunk **pchunk)
     (*pchunk)->offset = 0;
     (*pchunk)->content = (char *)malloc(4 * 1024 * sizeof(char));
     assert((*pchunk)->content != NULL);
-    size_t chunk_fnlen = strlen(E.filename) + strlen(".kilo_chunk") + numDigit(E.numchunks);
+    size_t chunk_fnlen = strlen(E.filename) + strlen(".kilo_chunk") + numDigit(E.numchunks) + 1;
     (*pchunk)->filename = (char *)malloc(chunk_fnlen * sizeof(char));
     assert((*pchunk)->filename != NULL);
     (*pchunk)->fp = NULL;
@@ -514,6 +515,13 @@ void disableRawMode(int fd)
 /* Called at exit to avoid remaining in raw mode. */
 void editorAtExit(void)
 {
+    echunk *pchunk = E.chunks_head->next;
+    while (pchunk != NULL)
+    {
+        deactivateChunk(&pchunk);
+        remove(pchunk->filename);
+        pchunk = pchunk->next;
+    }
     fwrite("\x1b[2J", sizeof(char), 4, stdout);
     fwrite("\x1b[H", sizeof(char), 3, stdout);
     fflush(stdout);
@@ -960,50 +968,6 @@ void editorSelectSyntaxHighlight(char *filename)
 }
 
 /* ======================= Editor rows implementation ======================= */
-
-/* Update the rendered version and the syntax highlight of a row. */
-void editorUpdateRow(erow *row)
-{
-    unsigned int tabs = 0, nonprint = 0;
-    int j, idx;
-
-    /* Create a version of the row we can directly print on the screen,
-     * respecting tabs, substituting non printable characters with '?'. */
-    free(row->render);
-    for (j = 0; j < row->size; j++)
-        if (row->chars[j] == TAB)
-            tabs++;
-
-    unsigned long long allocsize =
-        (unsigned long long)row->size + tabs * 8 + nonprint * 9 + 1;
-    if (allocsize > UINT32_MAX)
-    {
-        printf("Some line of the edited file is too long for kilo\n");
-        exit(1);
-    }
-
-    row->render = malloc(row->size + tabs * 8 + nonprint * 9 + 1);
-    idx = 0;
-    for (j = 0; j < row->size; j++)
-    {
-        if (row->chars[j] == TAB)
-        {
-            row->render[idx++] = ' ';
-            while ((idx + 1) % 8 != 0)
-                row->render[idx++] = ' ';
-        }
-        else
-        {
-            row->render[idx++] = row->chars[j];
-        }
-    }
-    row->rsize = idx;
-    row->render[idx] = '\0';
-
-    /* Update the syntax highlighting attributes of the row. */
-    //editorUpdateSyntax(row);
-}
-
 /* Insert the specified char at the current prompt position. */
 void editorInsertChar(int c)
 {
@@ -1057,7 +1021,6 @@ int editorOpen(char *filename)
     }
 
     stat(E.filename, &E.file_stat); // TODO:MAY DELETE Add by EyLinGer
-
     loadAChunk();
     E.cc.in_chunk = E.dec.in_chunk = E.dsc.in_chunk = E.chunks_head->next;
     E.dirty = 0;
@@ -1069,6 +1032,43 @@ int editorOpen(char *filename)
 /* Save the current file on disk. Return 0 on success, 1 on error. */
 int editorSave(void)
 {
+    FILE *fp = NULL;
+    echunk *pchunk = E.chunks_head->next;
+    char *savename = (char *)malloc(strlen(E.filename) + strlen(".save") + 1);
+    if (sprintf(savename, "%s.save", E.filename) < 0)
+    {
+        printf("sprinf failed\n");
+        exit(EXIT_FAILURE);
+    }
+    fp = fopen(savename, "w");
+    while (pchunk != NULL)
+    {
+        activateChunk(&pchunk);
+        fwrite(pchunk->content, sizeof(char), pchunk->size, fp);
+        deactivateChunk(&pchunk);
+        pchunk = pchunk->next;
+    }
+    char *buf = (char *)malloc(4 * 1024 * sizeof(char));
+    size_t nread = 0;
+    fpos_t pos;
+    fgetpos(E.fp, &pos);
+    if (E.eof != 1)
+    {
+        while (E.eof != 1)
+        {
+            nread = fread(buf, sizeof(char), 4 * 1024, E.fp);
+            fwrite(buf, sizeof(char), nread, fp);
+            fflush(fp);
+            if (feof(E.fp))
+            {
+                E.eof = 1;
+            }
+        }
+        fsetpos(E.fp, &pos);
+        E.eof = 0;
+    }
+
+    fclose(fp);
     return 0;
 }
 
@@ -1501,6 +1501,7 @@ int main(int argc, char **argv)
     initEditor();
     editorSelectSyntaxHighlight(argv[1]);
     editorOpen(argv[1]);
+
     enableRawMode(STDIN_FILENO);
     /*
     editorSetStatusMessage(
@@ -1512,6 +1513,6 @@ int main(int argc, char **argv)
         editorRefreshScreen();
         editorProcessKeypress(STDIN_FILENO);
     }
-
+    exit(0);
     return 0;
 }
