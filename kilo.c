@@ -228,6 +228,34 @@ void appendChunk(echunk **pchunk)
     ++E.numchunks;
 }
 
+void deactivateChunk(echunk **pchunk)
+{
+    if ((*pchunk) != NULL && (*pchunk) != E.chunks_head)
+    {
+        if ((*pchunk)->content != NULL)
+        {
+            (*pchunk)->fp = fopen((*pchunk)->filename, "w");
+            fwrite((*pchunk)->content, sizeof(char), (*pchunk)->size, (*pchunk)->fp);
+            fflush((*pchunk)->fp);
+            free((*pchunk)->content);
+            (*pchunk)->content = NULL;
+            fclose((*pchunk)->fp);
+        }
+    }
+}
+
+void activateChunk(echunk **pchunk)
+{
+    if ((*pchunk)->content == NULL && (*pchunk) != E.chunks_head)
+    {
+        (*pchunk)->content = (char *)malloc((*pchunk)->size);
+        assert((*pchunk)->content != NULL);
+        (*pchunk)->fp = fopen((*pchunk)->filename, "r");
+        fread((*pchunk)->content, sizeof(char), (*pchunk)->size, (*pchunk)->fp);
+        fclose((*pchunk)->fp);
+    }
+}
+
 void loadAChunk()
 {
     if (E.eof != 1)
@@ -260,6 +288,75 @@ void initRows(erow **prows)
     }
 }
 
+void cursorBackward(ecursor *pcursor, int n)
+{
+    assert(pcursor->in_chunk != NULL);
+    int i = 0;
+    while (i < n)
+    {
+        if (pcursor->offset < 0)
+        {
+            if (pcursor->in_chunk->prev != E.chunks_head)
+            {
+                pcursor->offset = pcursor->in_chunk->prev->size - 1;
+                pcursor->in_chunk = pcursor->in_chunk->prev;
+                continue;
+            }
+            else
+            {
+                return;
+            }
+        }
+        else if (pcursor->offset > 0)
+        {
+            --pcursor->offset;
+            ++i;
+        }
+        else
+        {
+            --pcursor->offset;
+        }
+    }
+}
+
+void cursorForward(ecursor *pcursor, int n)
+{
+    assert(pcursor->in_chunk != NULL);
+    int i = 0;
+    while (i < n)
+    {
+        if (pcursor->offset > pcursor->in_chunk->size - 1)
+        {
+            if (pcursor->in_chunk->next != NULL)
+            {
+                activateChunk(&pcursor->in_chunk->next);
+                pcursor->offset = 0;
+                pcursor->in_chunk = pcursor->in_chunk->next;
+                continue;
+            }
+            else
+            {
+                loadAChunk();
+                if (pcursor->in_chunk == E.last_chunk)
+                {
+                    pcursor->offset = pcursor->in_chunk->size - 1;
+                    break;
+                }
+                continue;
+            }
+        }
+        else if (pcursor->offset < pcursor->in_chunk->size - 1)
+        {
+            ++pcursor->offset;
+            ++i;
+        }
+        else
+        {
+            ++pcursor->offset;
+        }
+    }
+}
+
 int backwardALine(void)
 {
     assert(E.dsc.in_chunk != NULL);
@@ -269,6 +366,7 @@ int backwardALine(void)
     {
         if (E.dsc.offset < 0)
         {
+            activateChunk(&(E.dsc.in_chunk->prev));
             if (E.dsc.in_chunk->prev != E.chunks_head)
             {
                 E.dsc.offset = E.dsc.in_chunk->prev->size - 1;
@@ -330,19 +428,10 @@ int forwardALine(void)
         char c = E.dec.in_chunk->content[E.dec.offset];
         if (c == '\0')
         {
-            loadAChunk();
-            if (E.dec.in_chunk == E.last_chunk)
-            {
-                break;
-            }
-            else
-            {
-                E.dec.in_chunk = E.dec.in_chunk->next;
-                E.dec.offset = 0;
-                continue;
-            }
+            cursorForward(&E.dec, 1);
+            continue;
         }
-        ++E.dec.offset;
+        cursorForward(&E.dec, 1);
         E.line_buffer[nchars++] = c;
         if (c == '\n')
         {
@@ -351,74 +440,6 @@ int forwardALine(void)
     }
     E.line_buffer[nchars] = '\0';
     return nchars;
-}
-
-void cursorBackward(ecursor *pcursor, int n)
-{
-    assert(pcursor->in_chunk != NULL);
-    int i = 0;
-    while (i < n)
-    {
-        if (pcursor->offset < 0)
-        {
-            if (pcursor->in_chunk->prev != E.chunks_head)
-            {
-                pcursor->offset = pcursor->in_chunk->prev->size - 1;
-                pcursor->in_chunk = pcursor->in_chunk->prev;
-                continue;
-            }
-            else
-            {
-                return;
-            }
-        }
-        else if (pcursor->offset > 0)
-        {
-            --pcursor->offset;
-            ++i;
-        }
-        else
-        {
-            --pcursor->offset;
-        }
-    }
-}
-
-void cursorForward(ecursor *pcursor, int n)
-{
-    assert(pcursor->in_chunk != NULL);
-    int i = 0;
-    while (i < n)
-    {
-        if (pcursor->offset > pcursor->in_chunk->size - 1)
-        {
-            if (pcursor->in_chunk->next != NULL)
-            {
-                pcursor->offset = 0;
-                pcursor->in_chunk = pcursor->in_chunk->next;
-                continue;
-            }
-            else
-            {
-                loadAChunk();
-                if (pcursor->in_chunk == E.last_chunk)
-                {
-                    pcursor->offset = pcursor->in_chunk->size - 1;
-                    break;
-                }
-                continue;
-            }
-        }
-        else if (pcursor->offset < pcursor->in_chunk->size - 1)
-        {
-            ++pcursor->offset;
-            ++i;
-        }
-        else
-        {
-            ++pcursor->offset;
-        }
-    }
 }
 
 void editorSetStatusMessage(const char *fmt, ...);
@@ -1090,19 +1111,18 @@ void abFree(struct abuf *ab)
  * starting from the logical state of the editor in the global state 'E'. */
 void editorRefreshScreen(void)
 {
+    activateChunk(&E.dsc.in_chunk);
     E.dec = E.dsc;
+    struct abuf ab = ABUF_INIT;
+    abAppend(&ab, "\x1b[2J", 4);   // clear terminal
+    abAppend(&ab, "\x1b[?25l", 6); /* Hide cursor. */
+    abAppend(&ab, "\x1b[H", 3);    /* Go home. */
     for (int i = 0; i < E.numrows; ++i)
     {
         int linelen = forwardALine();
         strncpy(E.row[i].chars, E.line_buffer, linelen);
         E.row[i].size = linelen;
-    }
-    struct abuf ab = ABUF_INIT;
-    abAppend(&ab, "\x1b[2J", 4); // clear the terminal
-    abAppend(&ab,"\x1b[?25l",6); /* Hide cursor. */
-    abAppend(&ab,"\x1b[H",3); /* Go home. */
-    for (int i = 0; i < E.numrows; ++i)
-    {
+
         abAppend(&ab, E.row[i].chars, E.row[i].size);
         if (E.row[i].chars[E.row[i].size - 1] == '\n')
         {
@@ -1116,10 +1136,12 @@ void editorRefreshScreen(void)
     char buf[32];
     snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy + 1, E.cx + 1);
     abAppend(&ab, buf, strlen(buf));
-    abAppend(&ab,"\x1b[?25h",6); /* Show cursor. */
+    abAppend(&ab, "\x1b[?25h", 6); /* Show cursor. */
     fwrite(ab.b, sizeof(char), ab.len, stdout);
     fflush(stdout);
     abFree(&ab);
+    deactivateChunk(&E.dsc.in_chunk->prev);
+    deactivateChunk(&E.dec.in_chunk->next);
 }
 
 /* Set an editor status message for the second line of the status, at the
@@ -1480,7 +1502,6 @@ int main(int argc, char **argv)
     editorSelectSyntaxHighlight(argv[1]);
     editorOpen(argv[1]);
     enableRawMode(STDIN_FILENO);
-
     /*
     editorSetStatusMessage(
         "HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find");
