@@ -260,6 +260,7 @@ void cursorBackward(ecursor *pcursor, int n)
             }
             else
             {
+                pcursor->offset = 0;
                 return;
             }
         }
@@ -320,55 +321,19 @@ int backwardALine(void)
     char c = '\0';
     while (i < E.screencols)
     {
-        if (E.dsc.offset < 0)
-        {
-            activateChunk(&(E.dsc.in_chunk->prev));
-            if (E.dsc.in_chunk->prev != E.chunks_head)
-            {
-                E.dsc.offset = E.dsc.in_chunk->prev->size - 1;
-                E.dsc.in_chunk = E.dsc.in_chunk->prev;
-                continue;
-            }
-            else
-            {
-                E.dsc.offset = 0;
-                return i;
-            }
-        }
-        // E.dsc.offset >= 0
+        cursorBackward(&E.dsc, 1);
         c = E.dsc.in_chunk->content[E.dsc.offset];
         if (c == '\n')
         {
-            if (E.dsc.offset == E.dsc.in_chunk->size - 1)
-            {
-                loadAChunk();
-                if (E.dsc.in_chunk == E.last_chunk)
-                {
-                    return i;
-                }
-                else
-                {
-                    E.dsc.in_chunk = E.dsc.in_chunk->next;
-                    E.dsc.offset = 0;
-                }
-            }
-            else
-            {
-                --E.dsc.offset;
-                return i;
-            }
+            break;
+        }
+        else if (c == '\0')
+        {
+            continue;
         }
         else
         {
-            if (E.dsc.offset > 0)
-            {
-                --E.dsc.offset;
-                ++i;
-            }
-            else
-            {
-                --E.dsc.offset;
-            }
+            ++i;
         }
     }
     return i;
@@ -392,6 +357,7 @@ int forwardALine(void)
             }
             else
             {
+                activateChunk(&E.dec.in_chunk->next);
                 E.dec.in_chunk = E.dec.in_chunk->next;
                 E.dec.offset = 0;
                 continue;
@@ -778,8 +744,8 @@ void abFree(struct abuf *ab)
  * starting from the logical state of the editor in the global state 'E'. */
 void editorRefreshScreen(void)
 {
-    activateChunk(&E.dsc.in_chunk);
     E.dec = E.dsc;
+    activateChunk(&E.dsc.in_chunk);
     struct abuf ab = ABUF_INIT;
     abAppend(&ab, "\x1b[2J", 4);   // clear terminal
     abAppend(&ab, "\x1b[?25l", 6); /* Hide cursor. */
